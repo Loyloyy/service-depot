@@ -21,24 +21,24 @@ secrets in any tracked file.
 
 ## Two ways to drive it
 
-It's a thin wrapper over `docker compose` profiles. The launcher is for convenience; **raw compose always
-works** (and is what you want for debugging).
+It's a thin wrapper over `docker compose` profiles. `./depot` is for convenience — **no pip, no venv, no
+Python**, just a bash script over `docker compose` (+ `openssl` for `setup`). It echoes every command it
+runs, and **raw compose always works** (and is what you want for debugging).
 
-**Easy way — the `depot` launcher:**
+**Easy way — the `./depot` script:**
 ```bash
-pip install -e .            # installs the `depot` command (Python ≥3.9)
-depot setup                 # first-run: create depot-net, generate secrets into .env, make data dir, check prereqs
-depot up --app stage-2      # bring up the services Stage 2 needs (echoes the compose command it runs)
-depot status                # what's running + health + URLs
-depot connect stage-2       # print the LANGFUSE_* snippet to paste into the consumer's .env
-depot logs langfuse-web     # tail a service
-depot down --app stage-2
+./depot setup               # first-run: create depot-net, generate .env secrets, check prereqs
+./depot up stage-2          # bring up the services Stage 2 needs (echoes the compose command it runs)
+./depot status              # what's running
+./depot connect stage-2     # print the LANGFUSE_* snippet to paste into the consumer's .env
+./depot logs langfuse-web   # tail a service
+./depot down stage-2
 ```
-Interactive (no args) pops a menu: pick a consumer → action. `--dry-run` prints the command without running.
+Run `./depot` with no args for an interactive menu: pick a consumer → action.
 
 **Raw way — plain compose (power use + diagnosis):**
 ```bash
-docker network create depot-net          # once (depot setup does this)
+docker network create depot-net          # once (./depot setup does this)
 docker compose --profile stage-2 up -d   # or --profile langfuse for just Langfuse
 docker compose --profile stage-2 ps
 docker compose --profile stage-2 logs -f langfuse-web
@@ -47,7 +47,7 @@ docker compose --profile langfuse down
 
 ## Connect an app (e.g. Stage 2)
 
-`depot connect stage-2` prints exactly what to paste into the consumer's gitignored `.env`:
+`./depot connect stage-2` prints exactly what to paste into the consumer's gitignored `.env`:
 ```
 LANGFUSE_HOST=http://langfuse-web:3000
 LANGFUSE_PUBLIC_KEY=pk-lf-…
@@ -57,11 +57,12 @@ The consumer's app container must join `depot-net` to resolve `langfuse-web` (se
 override). The Langfuse UI is on **http://localhost:3000** (admin user from `LANGFUSE_INIT_*`).
 
 A second consumer (stage-3): create a `stage-3-poc` project in the Langfuse UI, record its keys in `.env`
-(`STAGE3_LANGFUSE_*`), then `depot connect stage-3`.
+(`STAGE3_LANGFUSE_*`), then `./depot connect stage-3`.
 
 ## Prerequisites
 
-- **Docker + `docker compose` v2** (Langfuse v3's stack needs v2; `depot setup` checks this).
+- **Docker + `docker compose` v2** (Langfuse v3's stack needs v2; `./depot setup` checks this). No Python
+  or pip — `./depot` is a bash script (uses `openssl` for `setup`).
 - **Local disk** for the stateful volumes (Postgres/ClickHouse/MinIO). Named volumes use Docker's
   data-root (local by default). If your data-root is on NFS, relocate it or set `DEPOT_DATA_DIR` to a
   local path — **ClickHouse/MinIO misbehave on NFS**.

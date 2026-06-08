@@ -1,0 +1,137 @@
+#!/usr/bin/env bash
+# depot — a thin, transparent wrapper over `docker compose` profiles for the shared services.
+#
+# NO pip / venv / Python — just bash + docker compose (+ openssl for `setup`). It echoes every command
+# it runs; raw `docker compose --profile … <action>` works identically (use that for debugging).
+#
+#   ./depot                 # interactive menu: pick a consumer + action
+#   ./depot setup           # first-run: create depot-net, generate .env secrets, check prereqs
+#   ./depot up   stage-2    # bring up the services a consumer needs (also: stage-3, or a service profile like `langfuse`)
+#   ./depot status          # what's running
+#   ./depot logs langfuse-web
+#   ./depot down stage-2
+#   ./depot connect stage-2 # print the LANGFUSE_* snippet to paste into that consumer's .env
+set -euo pipefail
+
+DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+NETWORK="depot-net"
+
+# Consumer → compose profile (same name) + label. Compose PROFILES are the source of truth; this is just
+# friendly names for the menu. Add a consumer here + give its services the matching profile in the compose.
+APP_ORDER=(stage-2 stage-3)
+declare -A APP_LABEL=(
+  [stage-2]="ai-engineer-research (Stage 2)   → langfuse"
+  [stage-3]="Stage 3 PoC builder (future)     → langfuse"
+)
+
+# Prefer docker compose v2 (Langfuse v3 needs it); fall back to docker-compose v1.
+dc() {
+  if docker compose version >/dev/null 2>&1; then
+    docker compose --project-directory "$DIR" -f "$DIR/docker-compose.yml" "$@"
+  else
+    docker-compose --project-directory "$DIR" -f "$DIR/docker-compose.yml" "$@"
+  fi
+}
+
+# Echo the equivalent compose command (transparent), then run it.
+runc() {
+  echo "→ docker compose $*" >&2
+  dc "$@"
+}
+
+getenv() { grep -E "^$1=" "$DIR/.env" 2>/dev/null | head -1 | cut -d= -f2- || true; }
+
+usage() { sed -n '2,17p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; }
+
+cmd_setup() {
+  echo "== depot setup =="
+  command -v docker >/dev/null && echo "docker: OK" || echo "docker: MISSING"
+  if docker compose version >/dev/null 2>&1; then echo "docker compose v2: OK"
+  else echo "docker compose v2: MISSING (Langfuse v3 needs it — install the compose v2 plugin)"; fi
+
+  if docker network inspect "$NETWORK" >/dev/null 2>&1; then
+    echo "network $NETWORK: exists"
+  else
+    echo "→ docker network create $NETWORK"; docker network create "$NETWORK" >/dev/null
+  fi
+
+  if [ -n "${DEPOT_DATA_DIR:-}" ]; then
+    mkdir -p "$DEPOT_DATA_DIR"; echo "data dir: $DEPOT_DATA_DIR (ensure this is LOCAL disk, not NFS)"
+  else
+    echo "data: Docker-managed named volumes (local driver)"
+  fi
+
+  if [ -f "$DIR/.env" ]; then
+    echo ".env: exists — leaving untouched (delete it to regenerate)"
+  else
+    command -v openssl >/dev/null || { echo "openssl missing — cannot generate secrets"; exit 1; }
+    cp "$DIR/.env.example" "$DIR/.env"
+    set_kv() { sed -i "s|^$1=.*|$1=$2|" "$DIR/.env"; }   # hex values → no sed-special chars
+    set_kv ENCRYPTION_KEY                  "$(openssl rand -hex 32)"
+    set_kv NEXTAUTH_SECRET                 "$(openssl rand -hex 32)"
+    set_kv SALT                            "$(openssl rand -hex 16)"
+    set_kv POSTGRES_PASSWORD               "$(openssl rand -hex 16)"
+    set_kv CLICKHOUSE_PASSWORD             "$(openssl rand -hex 16)"
+    set_kv REDIS_AUTH                      "$(openssl rand -hex 16)"
+    set_kv MINIO_ROOT_PASSWORD             "$(openssl rand -hex 16)"
+    set_kv LANGFUSE_INIT_PROJECT_PUBLIC_KEY "pk-lf-$(openssl rand -hex 12)"
+    set_kv LANGFUSE_INIT_PROJECT_SECRET_KEY "sk-lf-$(openssl rand -hex 16)"
+    set_kv LANGFUSE_INIT_USER_PASSWORD     "$(openssl rand -hex 12)"
+    echo ".env: generated with strong secrets → $DIR/.env"
+    echo "   ⚠ set LANGFUSE_INIT_USER_EMAIL in .env before bringing the stack up."
+  fi
+  echo
+  echo "Next:  ./depot up stage-2   →   ./depot connect stage-2"
+}
+
+cmd_connect() {
+  local app="${1:-stage-2}" pk sk prefix
+  if [ "$app" = "stage-2" ] || [ "$app" = "stage-2-research" ]; then
+    pk="$(getenv LANGFUSE_INIT_PROJECT_PUBLIC_KEY)"; sk="$(getenv LANGFUSE_INIT_PROJECT_SECRET_KEY)"
+  else
+    prefix="$(echo "$app" | tr -d '-' | tr '[:lower:]' '[:upper:]')"   # stage-3 → STAGE3
+    pk="$(getenv "${prefix}_LANGFUSE_PUBLIC_KEY")"; sk="$(getenv "${prefix}_LANGFUSE_SECRET_KEY")"
+    [ -n "$pk" ] || pk="<create the ${app} project in the Langfuse UI, set ${prefix}_LANGFUSE_PUBLIC_KEY in .env>"
+    [ -n "$sk" ] || sk="<set ${prefix}_LANGFUSE_SECRET_KEY in .env>"
+  fi
+  echo "# Langfuse connection for ${app} — paste into that repo's gitignored .env, then set AER_TRACING=1"
+  echo "LANGFUSE_HOST=http://langfuse-web:3000"
+  echo "LANGFUSE_PUBLIC_KEY=${pk:-<run ./depot setup first>}"
+  echo "LANGFUSE_SECRET_KEY=${sk:-<run ./depot setup first>}"
+}
+
+cmd_action() {  # <verb> [profile]
+  local verb="$1" profile="${2:-}"
+  case "$verb" in
+    up)      [ -n "$profile" ] || { echo "usage: ./depot up <consumer|service-profile>"; exit 1; }
+             runc --profile "$profile" up -d ;;
+    restart) runc ${profile:+--profile "$profile"} restart ;;
+    status)  runc ${profile:+--profile "$profile"} ps ;;
+    down)    runc down ;;   # `down` tears down the whole project (profiles don't scope it)
+    *) echo "unknown action: $verb"; exit 1 ;;
+  esac
+}
+
+cmd_menu() {
+  [ -t 0 ] || { echo "Not a TTY — use ./depot up <consumer> directly."; exit 0; }
+  echo; echo "service-depot — bring up shared services"; echo
+  local i=1
+  for a in "${APP_ORDER[@]}"; do printf "  [%d] %-9s %s\n" "$i" "$a" "${APP_LABEL[$a]}"; i=$((i+1)); done
+  read -rp "Which consumer? [number, q to cancel]: " sel
+  [[ "$sel" =~ ^[0-9]+$ ]] && [ "$sel" -ge 1 ] && [ "$sel" -le "${#APP_ORDER[@]}" ] || { echo "Cancelled."; exit 0; }
+  local app="${APP_ORDER[$((sel-1))]}"
+  read -rp "Action? [up/down/restart/status/logs] (up): " act
+  act="${act:-up}"
+  [ "$act" = "logs" ] && { runc --profile "$app" logs -f; return; }
+  cmd_action "$act" "$app"
+}
+
+case "${1:-}" in
+  "")             cmd_menu ;;
+  setup)          cmd_setup ;;
+  connect)        cmd_connect "${2:-stage-2}" ;;
+  up|down|restart|status) cmd_action "$1" "${2:-}" ;;
+  logs)           shift; runc logs -f "$@" ;;
+  -h|--help|help) usage ;;
+  *)              echo "unknown command: $1"; echo; usage; exit 1 ;;
+esac
