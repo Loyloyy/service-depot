@@ -19,8 +19,11 @@ NETWORK="depot-net"
 # Consumer → compose profile (same name) + label. Compose PROFILES are the source of truth; this is just
 # friendly names for the menu. Add a consumer here + give its services the matching profile in the compose.
 APP_ORDER=(stage-2 stage-3)
+# Every profile in the compose. `down` is PROFILE-SCOPED: a bare `docker compose down` stops nothing when
+# all services are gated by profiles, so we enable all of them to bring the whole depot down.
+ALL_PROFILES=(searxng langfuse stage-2 stage-3)
 declare -A APP_LABEL=(
-  [stage-2]="ai-engineer-research (Stage 2)   → langfuse"
+  [stage-2]="ai-engineer-research (Stage 2)   → searxng, langfuse"
   [stage-3]="Stage 3 PoC builder (future)     → langfuse"
 )
 
@@ -78,7 +81,8 @@ cmd_setup() {
     set_kv LANGFUSE_INIT_PROJECT_SECRET_KEY "sk-lf-$(openssl rand -hex 16)"
     set_kv LANGFUSE_INIT_USER_PASSWORD     "$(openssl rand -hex 12)"
     echo ".env: generated with strong secrets → $DIR/.env"
-    echo "   ⚠ set LANGFUSE_INIT_USER_EMAIL in .env before bringing the stack up."
+    echo "   Langfuse admin login → $(getenv LANGFUSE_INIT_USER_EMAIL) / $(getenv LANGFUSE_INIT_USER_PASSWORD)"
+    echo "   (change LANGFUSE_INIT_USER_EMAIL in .env if you want a different login.)"
   fi
   echo
   echo "Next:  ./depot up stage-2   →   ./depot connect stage-2"
@@ -107,9 +111,17 @@ cmd_action() {  # <verb> [profile]
              runc --profile "$profile" up -d ;;
     restart) runc ${profile:+--profile "$profile"} restart ;;
     status)  runc ${profile:+--profile "$profile"} ps ;;
-    down)    runc down ;;   # `down` tears down the whole project (profiles don't scope it)
     *) echo "unknown action: $verb"; exit 1 ;;
   esac
+}
+
+# Stop the WHOLE depot. `docker compose down` only targets services whose profile is enabled, so we pass
+# every profile. Flag args (e.g. -v to also remove volumes) pass through; a stray profile name is ignored.
+cmd_down() {
+  local flags=() passthru=()
+  for p in "${ALL_PROFILES[@]}"; do flags+=(--profile "$p"); done
+  for a in "$@"; do [[ "$a" == -* ]] && passthru+=("$a"); done
+  runc "${flags[@]}" down "${passthru[@]}"
 }
 
 cmd_menu() {
@@ -123,6 +135,7 @@ cmd_menu() {
   read -rp "Action? [up/down/restart/status/logs] (up): " act
   act="${act:-up}"
   [ "$act" = "logs" ] && { runc --profile "$app" logs -f; return; }
+  [ "$act" = "down" ] && { cmd_down; return; }
   cmd_action "$act" "$app"
 }
 
@@ -130,7 +143,8 @@ case "${1:-}" in
   "")             cmd_menu ;;
   setup)          cmd_setup ;;
   connect)        cmd_connect "${2:-stage-2}" ;;
-  up|down|restart|status) cmd_action "$1" "${2:-}" ;;
+  up|restart|status) cmd_action "$1" "${2:-}" ;;
+  down)           shift; cmd_down "$@" ;;
   logs)           shift; runc logs -f "$@" ;;
   -h|--help|help) usage ;;
   *)              echo "unknown command: $1"; echo; usage; exit 1 ;;

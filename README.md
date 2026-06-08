@@ -1,7 +1,7 @@
 # service-depot
 
 **Shared support services for any app** — self-hosted, run once, consumed by many. Currently ships
-**Langfuse** (LLM observability); **SearXNG** (search) and an **evals** service are planned. Apps don't
+**Langfuse** (LLM observability) and **SearXNG** (search); an **evals** service is planned. Apps don't
 embed these — they connect to a running instance by network + env, the 12-factor way.
 
 ```
@@ -75,3 +75,26 @@ A second consumer (stage-3): create a `stage-3-poc` project in the Langfuse UI, 
   exposed; the backing stores bind to `127.0.0.1` and stay on the internal network.
 - Stack adapted from Langfuse's official v3 self-host compose; bump image tags only after a changelog
   review.
+
+## Troubleshooting (learned the hard way)
+
+- **`langfuse-web` exits with `P1000 / Authentication failed against database`** — a credential mismatch.
+  The upstream compose duplicates DB/object-store creds across services with matching *defaults*; if a
+  generated secret isn't propagated to its consumer they diverge. This compose derives `DATABASE_URL` and
+  the MinIO S3 keys from the primary secrets (`POSTGRES_PASSWORD`, `MINIO_ROOT_USER/PASSWORD`) so they stay
+  consistent. If you change a primary secret *after* first boot, the data volume still has the old one →
+  reset with `docker compose --profile stage-2 down -v` (wipes volumes), then `./depot up stage-2`.
+- **`Invalid environment variables: LANGFUSE_INIT_USER_EMAIL`** — the init admin email must be a *valid*
+  email (the `<you@…>` style placeholder fails). `./depot setup` writes a valid default (`admin@example.com`);
+  change it in `.env` if you want, then recreate: `./depot up stage-2`.
+- **An image pull resets / "connection reset"** — that registry isn't reachable here. All six images pull
+  from Docker Hub for broad reachability (notably MinIO is `docker.io/minio/minio`, not `cgr.dev/...`).
+- **First boot is slow** — `langfuse-web` runs ~400 DB migrations on first start; "Ready" can take 1–3 min
+  after the containers come up. Watch `./depot logs langfuse-web`.
+- **Can't open the UI at `localhost:3000`** — the port is on the *server*. Tunnel it **from your local
+  machine** (e.g. PuTTY: Connection → SSH → Tunnels, source `3000` → dest `localhost:3000`; or
+  `ssh -L 3000:localhost:3000 <user>@<host>` from your laptop), then browse `localhost:3000`.
+- **Secrets** are generated locally by `openssl` into the gitignored `.env` — never committed. Anyone who
+  clones this repo runs `./depot setup` and gets their *own* fresh secrets; the public repo only ships
+  the recipe + placeholders, not the values.
+- **Needs `docker compose` v2** — the v1 binary won't run this stack; `./depot setup` flags it.

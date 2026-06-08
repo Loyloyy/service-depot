@@ -6,19 +6,19 @@
 #      (`--profile langfuse`). The `depot` launcher wraps this; raw `docker compose --profile …` also works.
 #   2. only `langfuse-web` joins the shared external `depot-net` (apps reach it by name); the backing
 #      stores stay on the project-internal default network — not exposed to consumers.
-#   3. TELEMETRY_ENABLED defaults to false (the egress allowlist blocks the phone-home anyway).
+#   3. TELEMETRY_ENABLED defaults to false (no external usage telemetry; keep everything in-network).
 #   4. secrets come from .env (generate with `depot setup`); the `# CHANGEME` defaults below are insecure
 #      placeholders for a bare `up` only — NEVER rely on them in real use.
+#   5. minio image is docker.io/minio/minio (not cgr.dev/chainguard/minio) so all six images pull from a
+#      single, broadly-reachable registry (Docker Hub).
 #
 # Cross-check env vars against the current upstream compose when bumping image tags.
-
-x-langfuse-profiles: &langfuse-profiles ["langfuse", "stage-2", "stage-3"]
 
 services:
   langfuse-worker:
     image: docker.io/langfuse/langfuse-worker:3
     restart: always
-    profiles: *langfuse-profiles
+    profiles: ["langfuse", "stage-2", "stage-3"]
     depends_on: &langfuse-depends-on
       postgres:
         condition: service_healthy
@@ -32,7 +32,8 @@ services:
       - 127.0.0.1:3030:3030
     environment: &langfuse-worker-env
       NEXTAUTH_URL: ${NEXTAUTH_URL:-http://localhost:3000}
-      DATABASE_URL: ${DATABASE_URL:-postgresql://postgres:postgres@postgres:5432/postgres} # CHANGEME
+      # Derived from POSTGRES_PASSWORD (single source of truth) so a generated secret stays consistent.
+      DATABASE_URL: postgresql://postgres:${POSTGRES_PASSWORD:-postgres}@postgres:5432/postgres
       SALT: ${SALT:-mysalt} # CHANGEME
       ENCRYPTION_KEY: ${ENCRYPTION_KEY:-0000000000000000000000000000000000000000000000000000000000000000} # CHANGEME: openssl rand -hex 32
       TELEMETRY_ENABLED: ${TELEMETRY_ENABLED:-false}
@@ -44,15 +45,15 @@ services:
       CLICKHOUSE_CLUSTER_ENABLED: ${CLICKHOUSE_CLUSTER_ENABLED:-false}
       LANGFUSE_S3_EVENT_UPLOAD_BUCKET: ${LANGFUSE_S3_EVENT_UPLOAD_BUCKET:-langfuse}
       LANGFUSE_S3_EVENT_UPLOAD_REGION: ${LANGFUSE_S3_EVENT_UPLOAD_REGION:-auto}
-      LANGFUSE_S3_EVENT_UPLOAD_ACCESS_KEY_ID: ${LANGFUSE_S3_EVENT_UPLOAD_ACCESS_KEY_ID:-minio}
-      LANGFUSE_S3_EVENT_UPLOAD_SECRET_ACCESS_KEY: ${LANGFUSE_S3_EVENT_UPLOAD_SECRET_ACCESS_KEY:-miniosecret} # CHANGEME
+      LANGFUSE_S3_EVENT_UPLOAD_ACCESS_KEY_ID: ${MINIO_ROOT_USER:-minio}
+      LANGFUSE_S3_EVENT_UPLOAD_SECRET_ACCESS_KEY: ${MINIO_ROOT_PASSWORD:-miniosecret}
       LANGFUSE_S3_EVENT_UPLOAD_ENDPOINT: ${LANGFUSE_S3_EVENT_UPLOAD_ENDPOINT:-http://minio:9000}
       LANGFUSE_S3_EVENT_UPLOAD_FORCE_PATH_STYLE: ${LANGFUSE_S3_EVENT_UPLOAD_FORCE_PATH_STYLE:-true}
       LANGFUSE_S3_EVENT_UPLOAD_PREFIX: ${LANGFUSE_S3_EVENT_UPLOAD_PREFIX:-events/}
       LANGFUSE_S3_MEDIA_UPLOAD_BUCKET: ${LANGFUSE_S3_MEDIA_UPLOAD_BUCKET:-langfuse}
       LANGFUSE_S3_MEDIA_UPLOAD_REGION: ${LANGFUSE_S3_MEDIA_UPLOAD_REGION:-auto}
-      LANGFUSE_S3_MEDIA_UPLOAD_ACCESS_KEY_ID: ${LANGFUSE_S3_MEDIA_UPLOAD_ACCESS_KEY_ID:-minio}
-      LANGFUSE_S3_MEDIA_UPLOAD_SECRET_ACCESS_KEY: ${LANGFUSE_S3_MEDIA_UPLOAD_SECRET_ACCESS_KEY:-miniosecret} # CHANGEME
+      LANGFUSE_S3_MEDIA_UPLOAD_ACCESS_KEY_ID: ${MINIO_ROOT_USER:-minio}
+      LANGFUSE_S3_MEDIA_UPLOAD_SECRET_ACCESS_KEY: ${MINIO_ROOT_PASSWORD:-miniosecret}
       LANGFUSE_S3_MEDIA_UPLOAD_ENDPOINT: ${LANGFUSE_S3_MEDIA_UPLOAD_ENDPOINT:-http://localhost:9090}
       LANGFUSE_S3_MEDIA_UPLOAD_FORCE_PATH_STYLE: ${LANGFUSE_S3_MEDIA_UPLOAD_FORCE_PATH_STYLE:-true}
       LANGFUSE_S3_MEDIA_UPLOAD_PREFIX: ${LANGFUSE_S3_MEDIA_UPLOAD_PREFIX:-media/}
@@ -62,8 +63,8 @@ services:
       LANGFUSE_S3_BATCH_EXPORT_REGION: ${LANGFUSE_S3_BATCH_EXPORT_REGION:-auto}
       LANGFUSE_S3_BATCH_EXPORT_ENDPOINT: ${LANGFUSE_S3_BATCH_EXPORT_ENDPOINT:-http://minio:9000}
       LANGFUSE_S3_BATCH_EXPORT_EXTERNAL_ENDPOINT: ${LANGFUSE_S3_BATCH_EXPORT_EXTERNAL_ENDPOINT:-http://localhost:9090}
-      LANGFUSE_S3_BATCH_EXPORT_ACCESS_KEY_ID: ${LANGFUSE_S3_BATCH_EXPORT_ACCESS_KEY_ID:-minio}
-      LANGFUSE_S3_BATCH_EXPORT_SECRET_ACCESS_KEY: ${LANGFUSE_S3_BATCH_EXPORT_SECRET_ACCESS_KEY:-miniosecret} # CHANGEME
+      LANGFUSE_S3_BATCH_EXPORT_ACCESS_KEY_ID: ${MINIO_ROOT_USER:-minio}
+      LANGFUSE_S3_BATCH_EXPORT_SECRET_ACCESS_KEY: ${MINIO_ROOT_PASSWORD:-miniosecret}
       LANGFUSE_S3_BATCH_EXPORT_FORCE_PATH_STYLE: ${LANGFUSE_S3_BATCH_EXPORT_FORCE_PATH_STYLE:-true}
       REDIS_HOST: ${REDIS_HOST:-redis}
       REDIS_PORT: ${REDIS_PORT:-6379}
@@ -73,7 +74,7 @@ services:
   langfuse-web:
     image: docker.io/langfuse/langfuse:3
     restart: always
-    profiles: *langfuse-profiles
+    profiles: ["langfuse", "stage-2", "stage-3"]
     depends_on: *langfuse-depends-on
     ports:
       - 3000:3000
@@ -98,7 +99,7 @@ services:
   clickhouse:
     image: docker.io/clickhouse/clickhouse-server
     restart: always
-    profiles: *langfuse-profiles
+    profiles: ["langfuse", "stage-2", "stage-3"]
     user: "101:101"
     environment:
       CLICKHOUSE_DB: default
@@ -118,9 +119,12 @@ services:
       start_period: 1s
 
   minio:
-    image: cgr.dev/chainguard/minio
+    # Upstream uses cgr.dev/chainguard/minio; we use docker.io/minio/minio — the official MinIO image
+    # (and Langfuse's choice before the Chainguard hardening swap) — so every image pulls from one
+    # broadly-reachable registry (Docker Hub). Same `sh` entrypoint + `mc` healthcheck.
+    image: docker.io/minio/minio
     restart: always
-    profiles: *langfuse-profiles
+    profiles: ["langfuse", "stage-2", "stage-3"]
     entrypoint: sh
     command: -c 'mkdir -p /data/langfuse && minio server --address ":9000" --console-address ":9001" /data'
     environment:
@@ -141,7 +145,7 @@ services:
   redis:
     image: docker.io/redis:7
     restart: always
-    profiles: *langfuse-profiles
+    profiles: ["langfuse", "stage-2", "stage-3"]
     command: >
       --requirepass ${REDIS_AUTH:-myredissecret}
       --maxmemory-policy noeviction
@@ -158,7 +162,7 @@ services:
   postgres:
     image: docker.io/postgres:${POSTGRES_VERSION:-17}
     restart: always
-    profiles: *langfuse-profiles
+    profiles: ["langfuse", "stage-2", "stage-3"]
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U postgres"]
       interval: 3s
@@ -174,6 +178,21 @@ services:
       - 127.0.0.1:5432:5432
     volumes:
       - langfuse_postgres_data:/var/lib/postgresql/data
+
+  # SearXNG — shared search backend. Consumers reach it on depot-net as http://searxng:8080.
+  # `--profile stage-2` brings it up with Langfuse; `--profile searxng` brings up just search.
+  searxng:
+    image: searxng/searxng:latest
+    profiles: ["searxng", "stage-2"]
+    networks:
+      - depot-net
+    ports:
+      - 127.0.0.1:8080:8080   # host access for debugging; consumers use the network, not this port
+    volumes:
+      - ./searxng:/etc/searxng:rw
+    environment:
+      - SEARXNG_BASE_URL=http://localhost:8080/
+    restart: unless-stopped
 
 # Named volumes use Docker's local driver (stored under Docker's data-root = local disk by default —
 # NOT the NFS share). If your Docker data-root is itself on NFS, relocate it or switch these to bind
