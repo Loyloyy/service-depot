@@ -10,8 +10,8 @@ embed these — they connect to a running instance by network + env, the 12-fact
         └───────────────▲──────────────────▲─────────────────────┘
                         │  depot-net (shared docker network)
         ┌───────────────┴───────┐  ┌───────┴───────────────┐
-        │ ai-engineer-research  │  │  stage-3 PoC builder  │   … any app
-        │  (Stage 2 consumer)   │  │   (future consumer)   │
+        │ ai-engineer-research  │  │      poc-foundry      │   … any app
+        │  (Stage 2 consumer)   │  │   (Stage 3 consumer)  │
         └───────────────────────┘  └───────────────────────┘
 ```
 
@@ -32,7 +32,7 @@ runs, and **raw compose always works** (and is what you want for debugging).
 ./depot status              # what's running
 ./depot connect stage-2     # print the LANGFUSE_* snippet to paste into the consumer's .env
 ./depot logs langfuse-web   # tail a service
-./depot down stage-2
+./depot down                # stop ALL shared services (add -v to also wipe data)
 ```
 Run `./depot` with no args for an interactive menu: pick a consumer → action.
 
@@ -42,7 +42,7 @@ docker network create depot-net          # once (./depot setup does this)
 docker compose --profile stage-2 up -d   # or --profile langfuse for just Langfuse
 docker compose --profile stage-2 ps
 docker compose --profile stage-2 logs -f langfuse-web
-docker compose --profile langfuse down
+docker compose --profile stage-2 down    # `down` is PROFILE-SCOPED — without a profile it stops nothing
 ```
 
 ## Connect an app (e.g. Stage 2)
@@ -53,16 +53,35 @@ LANGFUSE_HOST=http://langfuse-web:3000
 LANGFUSE_PUBLIC_KEY=pk-lf-…
 LANGFUSE_SECRET_KEY=sk-lf-…
 ```
-The consumer's app container must join `depot-net` to resolve `langfuse-web` (see that repo's compose
-override). The Langfuse UI is on **http://localhost:3000** (admin user from `LANGFUSE_INIT_*`).
+The consumer's app container must be on `depot-net` to resolve `langfuse-web` (the `ai-engineer-research`
+app joins it in its base compose). The Langfuse UI is on **http://localhost:3000** (admin user from
+`LANGFUSE_INIT_*`).
 
-A second consumer (stage-3): create a `stage-3-poc` project in the Langfuse UI, record its keys in `.env`
-(`STAGE3_LANGFUSE_*`), then `./depot connect stage-3`.
+## Second consumer: `poc-foundry` (Stage 3)
+
+Stage 3 is onboarded **additively** — one shared Langfuse *instance*, a separate *project* per consumer
+(a project is just a dashboard + key pair, not a service). `./depot up stage-3` brings up the same
+services as Stage 2 (**SearXNG + Langfuse**); the `stage-2` profile is unchanged.
+
+1. **Bring up the services:** `./depot up stage-3` (or raw `docker compose --profile stage-3 up -d`).
+2. **Create the project:** in the Langfuse UI (http://localhost:3000), under the `depot` org, create a
+   project named **`stage-3-poc`** and generate an API key pair for it.
+3. **Record its keys** in depot's gitignored `.env`:
+   ```
+   STAGE3_LANGFUSE_PUBLIC_KEY=pk-lf-…
+   STAGE3_LANGFUSE_SECRET_KEY=sk-lf-…
+   ```
+4. **Print the snippet:** `./depot connect stage-3` emits the `LANGFUSE_*` block to paste into
+   poc-foundry's own gitignored `.env`.
+5. **Join the network:** poc-foundry's app container must be on `depot-net` (declare it in poc-foundry's
+   base compose) so it can resolve `langfuse-web` and `searxng` by name.
 
 ## Prerequisites
 
 - **Docker + `docker compose` v2** (Langfuse v3's stack needs v2; `./depot setup` checks this). No Python
   or pip — `./depot` is a bash script (uses `openssl` for `setup`).
+- **Executable bit:** if `git pull` lands `depot` non-executable (common when the repo was committed from a
+  Windows filesystem), run `chmod +x depot` once — or just invoke it as `bash depot …`.
 - **Local disk** for the stateful volumes (Postgres/ClickHouse/MinIO). Named volumes use Docker's
   data-root (local by default). If your data-root is on NFS, relocate it or set `DEPOT_DATA_DIR` to a
   local path — **ClickHouse/MinIO misbehave on NFS**.
@@ -75,6 +94,18 @@ A second consumer (stage-3): create a `stage-3-poc` project in the Langfuse UI, 
   exposed; the backing stores bind to `127.0.0.1` and stay on the internal network.
 - Stack adapted from Langfuse's official v3 self-host compose; bump image tags only after a changelog
   review.
+
+## Parked — considered, not built (revisit when there's a real signal)
+
+Candidate services deliberately **not** added yet. Recorded so the rationale isn't relitigated; build
+only when the trigger below actually fires.
+
+- **devpi** (PyPI pull-through cache) — would speed poc-foundry's per-build `uv sync` and cut egress.
+  *Revisit after Stage 3's M2*, once real build frequency is known.
+- **verdaccio** (npm mirror) — only if the npm-egress appeal is ever granted; no point before that.
+- **evals** service — planned shared service (see the diagram up top); not yet scoped.
+- **container-registry pull-through cache** — for the sandbox service images (Milvus / pgvector /
+  OpenSearch). Defer until image-pull volume justifies it.
 
 ## Troubleshooting (learned the hard way)
 
@@ -97,4 +128,7 @@ A second consumer (stage-3): create a `stage-3-poc` project in the Langfuse UI, 
 - **Secrets** are generated locally by `openssl` into the gitignored `.env` — never committed. Anyone who
   clones this repo runs `./depot setup` and gets their *own* fresh secrets; the public repo only ships
   the recipe + placeholders, not the values.
+- **`docker compose down` stops nothing** — `down` is **profile-scoped**, and every service here is gated
+  by a profile, so a bare `down` matches none. `./depot down` handles this (it enables all profiles); with
+  raw compose you must pass one: `docker compose --profile stage-2 down`.
 - **Needs `docker compose` v2** — the v1 binary won't run this stack; `./depot setup` flags it.

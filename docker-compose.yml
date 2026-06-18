@@ -180,10 +180,11 @@ services:
       - langfuse_postgres_data:/var/lib/postgresql/data
 
   # SearXNG — shared search backend. Consumers reach it on depot-net as http://searxng:8080.
-  # `--profile stage-2` brings it up with Langfuse; `--profile searxng` brings up just search.
+  # `--profile stage-2` / `--profile stage-3` bring it up alongside Langfuse for that consumer;
+  # `--profile searxng` brings up just search.
   searxng:
     image: searxng/searxng:latest
-    profiles: ["searxng", "stage-2"]
+    profiles: ["searxng", "stage-2", "stage-3"]
     networks:
       - depot-net
     ports:

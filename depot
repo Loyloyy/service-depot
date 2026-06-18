@@ -24,7 +24,7 @@ APP_ORDER=(stage-2 stage-3)
 ALL_PROFILES=(searxng langfuse stage-2 stage-3)
 declare -A APP_LABEL=(
   [stage-2]="ai-engineer-research (Stage 2)   → searxng, langfuse"
-  [stage-3]="Stage 3 PoC builder (future)     → langfuse"
+  [stage-3]="poc-foundry (Stage 3)            → searxng, langfuse"
 )
 
 # Prefer docker compose v2 (Langfuse v3 needs it); fall back to docker-compose v1.
