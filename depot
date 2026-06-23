@@ -54,8 +54,14 @@ cmd_setup() {
 
   if docker network inspect "$NETWORK" >/dev/null 2>&1; then
     echo "network $NETWORK: exists"
+    # Check whether the prune-guard label is already set; if not, warn — the network was created before
+    # this guard was added and must be recreated (./depot down && docker network rm depot-net && ./depot setup).
+    label=$(docker network inspect "$NETWORK" --format '{{index .Labels "depot.keep"}}' 2>/dev/null || true)
+    [ "$label" = "true" ] || echo "  ⚠  depot-net lacks depot.keep=true label — 'docker network prune' may delete it."
+    echo "     To add the label: ./depot down && docker network rm $NETWORK && ./depot setup"
   else
-    echo "→ docker network create $NETWORK"; docker network create "$NETWORK" >/dev/null
+    echo "→ docker network create --label depot.keep=true $NETWORK"
+    docker network create --label "depot.keep=true" "$NETWORK" >/dev/null
   fi
 
   if [ -n "${DEPOT_DATA_DIR:-}" ]; then
